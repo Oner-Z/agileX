@@ -17,3 +17,8 @@ robot:
     r_max: 0.75
     max_tilt_free_deg: 180        # 空中姿态（预抓/预放/抬起/撤退）的倾斜上限，规划器读这个值
     max_tilt_from_down_deg: 180   # 取消抓取/放置的倾斜限制（只剩关节限位和桌面高度）
+
+sim:
+  mujoco:
+    gripper_max_width: 0.100     # MuJoCo 模型默认 70 mm 夹爪，会覆盖 robot.gripper.max_width；比赛夹爪 100 mm
+  use_site_knn: false
