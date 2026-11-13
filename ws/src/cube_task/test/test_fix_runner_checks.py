@@ -298,3 +298,24 @@ def test_pair_offset_keeps_zone_mates_near_the_card_center_far_one_first():
     cfg.set('place.pair_offset', {'zone_red': [-0.01, 0.0]})
     with pytest.raises(ValueError):
         PlacePlanner(cfg)
+
+
+def test_near_center_release_goes_as_close_to_the_center_as_the_zone_mates_allow():
+    cfg = make_cfg('L2')
+    cfg.set('robot.gripper.max_width', 0.100)
+    z = parse_zone('zone_green', {'center': [0.60, -0.30, 0.0], 'size': [0.20, 0.20]})
+    pp = PlacePlanner(cfg)
+    h = {'length': 0.085, 'width': 0.085, 'grip_width': 0.08, 'grip_z': 0.03}
+    alone = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False,
+                    near_center=True)
+    assert pp.last_info['tier'] == 'near_center'
+    assert np.allclose(alone.T_release[:2, 3], [0.60, -0.30], atol=1e-6)
+    occ = [(0.60, -0.245, 0.26, 0.08, 0.26, 0.04, 0.0)]              # cucumber on the strip
+    slot = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False, occupied=occ)
+    near = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False, occupied=occ,
+                   near_center=True)
+    info = pp.last_info
+    assert info['tier'] == 'near_center'
+    assert info['edge_margin'] >= pp.slot_margin - 1e-9 and info['clearance'] >= 0.0
+    d = [np.hypot(p.T_release[0, 3] - 0.60, p.T_release[1, 3] + 0.30) for p in (slot, near)]
+    assert d[1] < d[0]

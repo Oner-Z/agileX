@@ -266,9 +266,11 @@ def test_runner_releases_the_long_cucumber_first_then_the_pear_beside_it(monkeyp
     pear_cap = footprint_capsule(pear['xy'][0], pear['xy'][1], 0.085, 0.085, None)
     assert capsule_edge_margin(zone, pear_cap) >= 0.0
     assert pear['footprint_clearance'] >= 0.0
-    # Both released place.release_height_flat above the card (bottom = TCP - held offset).
+    # Both released place.release_height_flat above the card (bottom = TCP - held offset),
+    # the pear place.release_lower lower.
     for e in picks:
-        assert e['release_xyz'][2] - e['grasp_xyz'][2] == pytest.approx(0.01)
+        low = 0.005 if e['label'] == 'pear' else 0.0
+        assert e['release_xyz'][2] - e['grasp_xyz'][2] == pytest.approx(0.01 - low)
     closes = {c[2] for c in rig.arm.commands if c[0] == 'gripper' and c[1] < 0.01}
     assert closes == {2.5}                                            # tasks.L2 default
 

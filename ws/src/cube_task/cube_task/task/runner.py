@@ -269,6 +269,8 @@ class TaskRunner:
         self.transit_clear = float(cfg.get(g + 'transit_object_clearance',
                                            TRANSIT_OBJECT_CLEARANCE))
         #: label -> m the release goes below place.release_height(_flat) (place.release_lower)
+        #: labels released as near the zone center as the objects there allow
+        self.center_labels = set(str(x) for x in (cfg.get('place.center_labels', []) or []))
         self.release_lower = {str(k): float(v) for k, v in
                               (cfg.get('place.release_lower', {}) or {}).items()
                               if v is not None and math.isfinite(float(v))}
@@ -851,7 +853,8 @@ class TaskRunner:
         pending = [p for p in pending if p is not None]
         pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                               center_first=self._center_first(zone_name), held=shape,
-                              pending=pending, lower=lower)
+                              pending=pending, lower=lower,
+                              near_center=det.label in self.center_labels)
         place_info = dict(self.placer.last_info)
         if not pp.feasible:
             self._blacklist(track, 'place infeasible: %s' % pp.reason)
@@ -871,7 +874,8 @@ class TaskRunner:
             avoid.append((float(pp.T_release[0, 3]), float(pp.T_release[1, 3])))
             pc = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                                   center_first=self._center_first(zone_name), held=shape,
-                                  pending=pending, avoid=avoid, lower=lower)
+                                  pending=pending, avoid=avoid, lower=lower,
+                                  near_center=det.label in self.center_labels)
             if not pc.feasible or any(math.hypot(float(pc.T_release[0, 3]) - a,
                                                  float(pc.T_release[1, 3]) - b) < 1e-6
                                       for a, b in avoid):

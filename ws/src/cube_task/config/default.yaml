@@ -230,6 +230,7 @@ grasp:
     pear: 0.098
   verify_grasp: true
   open_full_tasks: [L1]         # open to robot.gripper.max_width before these tasks' grasps
+  open_full_labels: [bell_pepper]   # ... and before these labels' grasps (11/13: bumpy, misses)
 
 place:
   release_height: 0.06         # object bottom above the zone floor when the gripper opens
@@ -239,6 +240,10 @@ place:
   # still apply. bell_pepper: released a little lower so it does not tip over on the card.
   release_lower:
     bell_pepper: 0.005
+    pear: 0.005                # 11/13: pear rolled; released as low as the bell pepper
+  # labels released as near the card center as the objects already there allow (8 mm gap)
+  # instead of a corner slot: the pear rolled off from its corner of zone_green (11/13)
+  center_labels: [pear]
   open_width: null             # null -> robot.gripper.max_width
   # Spread releases inside a zone: first free slot of a grid from zone.size minus the
   # held object's footprint (zone center first when at most one class_to_zone label maps

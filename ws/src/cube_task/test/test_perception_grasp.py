@@ -183,3 +183,17 @@ def test_fit_width_per_label_lets_a_wide_pear_be_grasped():
     cfg.set('grasp.fit_width', {'pear': 0.0})
     with pytest.raises(ValueError):
         GraspPlanner(cfg, 'L2')
+
+
+def test_open_full_labels_open_the_gripper_fully_for_those_labels_only():
+    cfg = make_cfg('L2')
+    cfg.set('grasp.open_full_tasks', [])
+    cfg.set('grasp.open_full_labels', ['bell_pepper'])
+    cfg.set('robot.gripper.max_width', 0.100)
+    gp = GraspPlanner(cfg, 'L2')
+    assert gp._opens_full('bell_pepper') and not gp._opens_full('persimmon')
+    det = make_det('bell_pepper', 0.30, 0.0, size=0.05)
+    plan = gp.plan(det)
+    assert plan.open_width == pytest.approx(gp.max_width)
+    det2 = make_det('persimmon', 0.30, 0.0, size=0.05)
+    assert gp.plan(det2).open_width < gp.max_width

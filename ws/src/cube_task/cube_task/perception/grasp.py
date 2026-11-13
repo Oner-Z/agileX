@@ -41,6 +41,10 @@ NEIGHBOR_CLEARANCE = 0.002
 TABLE_Z_WARN_TOL = 0.01
 #: a released object's bottom passes this far above the tallest object already in the zone.
 STACK_CLEARANCE = 0.01
+#: near_center releases (place.center_labels): grid step (m) searched outward from the
+#: zone center, and the clearance (m) kept to the objects already there.
+NEAR_CENTER_STEP = 0.0025
+NEAR_CENTER_GAP = 0.008
 #: release slots keep the held object's footprint this far inside the zone edge (m); the
 #: rules count an object only when it is wholly inside the card (cucumber: 2/3).
 SLOT_MARGIN = 0.025
@@ -334,6 +338,9 @@ class GraspPlanner:
         # Open to max_width before every grasp of these tasks (a turned block fits).
         self.open_full = self.task in [str(t) for t in
                                        (cfg.get('grasp.open_full_tasks', None) or [])]
+        #: ... and before every grasp of these labels (grasp.open_full_labels)
+        self.open_full_labels = set(str(x) for x in
+                                    (cfg.get('grasp.open_full_labels', None) or []))
         self.close_width = _float(cfg, 'robot.gripper.close_width', 0.0)
         self.table_clearance = _required_float(cfg, 'robot.workspace.min_table_clearance')
         # The taught table height bounds the grasp floor from below (extrinsics z offset).
@@ -368,6 +375,10 @@ class GraspPlanner:
                            k, float(v), self.max_width)
                 continue
             self.fit_width[str(k)] = float(v)
+
+    def _opens_full(self, label: Optional[str]) -> bool:
+        """True when the gripper opens to max_width before grasping label."""
+        return self.open_full or str(label) in self.open_full_labels
 
     def _fit(self, label: Optional[str]) -> float:
         """Widest section (m) grasped for label: grasp.fit_width or max_width - 2 x clearance."""
@@ -460,7 +471,7 @@ class GraspPlanner:
             z_grasp, expected, open_w, reason, more = self._profile_grasp(
                 det, prof, top, z_floor)
             info.update(more)
-        if self.open_full:
+        if self._opens_full(det.label):
             open_w = self.max_width
         if not reason and z_grasp >= top:
             reason = 'too_flat: top %.4f m is not above the lowest TCP z %.4f m' % (top, z_floor)
@@ -568,7 +579,7 @@ class GraspPlanner:
         nb = np.asarray(nb, dtype=np.float64).reshape(-1, 2)
         if nb.shape[0] == 0:
             return 0
-        open_w = (self.max_width if self.open_full
+        open_w = (self.max_width if self._opens_full(det.label)
                   else min(self.max_width, expected + self.open_margin))
         ax = np.array([math.cos(closing), math.sin(closing)])
         rel = nb - np.array([x, y])
@@ -802,6 +813,26 @@ class PlacePlanner:
                 best, best_clear = (x, y), clear
         return best
 
+    def _near_center(self, zone: Zone, center: Tuple[float, float], evaluate, skip,
+                     reserve_ok=lambda x, y, ax: True):
+        """Grid release nearest the zone center with the edge margin and NEAR_CENTER_GAP."""
+        ca, sa = math.cos(zone.yaw), math.sin(zone.yaw)
+        nx = int(math.floor(float(zone.size[0]) / 2.0 / NEAR_CENTER_STEP))
+        ny = int(math.floor(float(zone.size[1]) / 2.0 / NEAR_CENTER_STEP))
+        cells = sorted(((i * NEAR_CENTER_STEP, j * NEAR_CENTER_STEP)
+                        for i in range(-nx, nx + 1) for j in range(-ny, ny + 1)),
+                       key=lambda q: (math.hypot(q[0], q[1]), -q[0], -q[1]))
+        rows = []
+        for a, b in cells:
+            x, y = center[0] + ca * a - sa * b, center[1] + sa * a + ca * b
+            if not skip(x, y):
+                rows.extend((x, y) + r[1:] for r in evaluate(x, y))
+        for gap in (NEAR_CENTER_GAP, 0.0):     # a clear gap first, else just not touching
+            for x, y, ax, closing, e, cl, more in rows:
+                if e >= self.slot_margin - 1e-9 and cl >= gap and reserve_ok(x, y, ax):
+                    return x, y, ax, closing, e, cl, more
+        return None
+
     def _slots(self, zone: Zone, footprint: float) -> List[Tuple[float, float]]:
         """
         Release slots for an object of this footprint (m): with place.pair_offset for
@@ -888,7 +919,8 @@ class PlacePlanner:
     def release_pose(self, zone: Zone, held: dict, occupied: Sequence[Sequence[float]] = (),
                      center_first: bool = True, pending: Sequence[Sequence[float]] = (),
                      center_only: bool = False, avoid: Sequence[Sequence[float]] = (),
-                     lower: float = 0.0) -> Tuple[float, float, float, dict]:
+                     lower: float = 0.0, near_center: bool = False
+                     ) -> Tuple[float, float, float, dict]:
         """
         Return (x, y, closing angle, info) of a shaped release (see plan, held).
 
@@ -905,6 +937,10 @@ class PlacePlanner:
         (RESERVE_CLEARANCE). center_only: the zone center (best axis there).
         avoid: release xy already found unreachable; positions within
         AVOID_RADIUS of them are skipped (the center too, unless center_only).
+        near_center: instead of the slots, the grid position nearest the zone center
+        that keeps place.slot_margin to the edge, NEAR_CENTER_GAP (else 0) to the
+        objects and finger band, and room for the fingers of a pending long object on
+        its strip (tier near_center); the usual tiers when none does.
         """
         banned = [(float(a[0]), float(a[1])) for a in avoid]
 
@@ -973,6 +1009,16 @@ class PlacePlanner:
                                      finger_floor, occ)
             return done(x, y, ax, closing, capsule_edge_margin(zone, cap), min(fp, fg),
                         (fp, fg, open_w), 'long_strip')
+        if near_center and not center_only:
+            def reserve_ok(x, y, ax):
+                # a long object still to come is released on its strip with the fingers
+                # open across it: keep them clear of this one too
+                cap = footprint_capsule(x, y, L, W, ax)
+                return all(_seg_dist(cap[0], cap[1], r[0], r[1]) - cap[2] - r[2]
+                           >= RELEASE_OPEN_EXTRA / 2.0 + FINGER_OUTER for r in reserve)
+            hit = self._near_center(zone, center, evaluate, skip, reserve_ok)
+            if hit is not None:
+                return done(*hit, tier='near_center')
         for x, y in ([] if center_only else legacy):
             if skip(x, y):
                 continue
@@ -1015,7 +1061,8 @@ class PlacePlanner:
              footprint: Optional[float] = None, occupied: Sequence[Sequence[float]] = (),
              center_first: bool = True, held: Optional[dict] = None,
              pending: Sequence[Sequence[float]] = (), center_only: bool = False,
-             avoid: Sequence[Sequence[float]] = (), lower: float = 0.0) -> PlacePlan:
+             avoid: Sequence[Sequence[float]] = (), lower: float = 0.0,
+             near_center: bool = False) -> PlacePlan:
         """
         Return a PlacePlan for releasing into zone (poses in the base frame, m).
 
@@ -1027,6 +1074,7 @@ class PlacePlanner:
         closing axis), grip_width (m), grip_z (grasp TCP above the object
         bottom, m). None = the footprint rule above. pending / center_only: see
         release_pose (center_only also applies without held). avoid: see release_pose.
+        near_center: see release_pose (place.center_labels).
         lower: m the release goes below the release height (place.release_lower
         per label); the wall rim and stack clearances still apply.
         """
@@ -1059,7 +1107,7 @@ class PlacePlanner:
             W = float(held.get('width', 0.0) or 0.0)
         if held is not None and _finite(L) and _finite(W) and max(L, W) > 0.0:
             x, y, ang, info = self.release_pose(zone, held, occupied, center_first, pending,
-                                                center_only, avoid, lower)
+                                                center_only, avoid, lower, near_center)
             open_w = info['open_width']
             self.last_info = info
             # On a flat card a footprint clear of the objects already there drops from the
