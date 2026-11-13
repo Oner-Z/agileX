@@ -278,3 +278,23 @@ def test_release_opening_stopped_at_the_held_width_is_still_a_fault():
     skill, g, p, world, arm = _skill_setup(stop_at=0.03 + 0.005)
     r = skill.execute(g, p)
     assert not r.ok and r.detail['fault'] and r.error == 'gripper_fault'
+
+
+def test_pair_offset_keeps_zone_mates_near_the_card_center_far_one_first():
+    cfg = make_cfg('L2')
+    z = parse_zone('zone_red', {'center': [0.60, 0.30, 0.0], 'size': [0.20, 0.20]})
+    cfg.set('place.pair_offset', {'zone_red': [0.035, 0.025]})
+    pp = PlacePlanner(cfg)
+    slots = pp._slots(z, 0.075)
+    assert len(slots) == 2
+    (x1, y1), (x2, y2) = slots
+    assert np.hypot(x1, y1) > np.hypot(x2, y2)                         # far one first
+    assert np.hypot(x1 - 0.60, y1 - 0.30) == pytest.approx(np.hypot(0.035, 0.025))
+    assert np.allclose([x1 + x2, y1 + y2], [1.20, 0.60])               # mirrored
+    for x, y in slots:
+        assert z.contains_xy(x, y, margin=-(0.075 / 2.0 + SLOT_MARGIN) + 1e-9)
+    other = parse_zone('zone_green', {'center': [0.60, -0.30, 0.0], 'size': [0.20, 0.20]})
+    assert pp._slots(other, 0.075) == release_slots(other, 0.075, pp.slot_margin)
+    cfg.set('place.pair_offset', {'zone_red': [-0.01, 0.0]})
+    with pytest.raises(ValueError):
+        PlacePlanner(cfg)

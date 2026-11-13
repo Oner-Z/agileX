@@ -248,6 +248,12 @@ place:
   # m, a spread release keeps the footprint this far inside the card edge (the rules count
   # an object only when it is wholly inside; the measured footprint can be ~1 cm short)
   slot_margin: 0.025
+  # zone -> [toward the base, across] m: its zone-mates go to two mirrored slots this far
+  # off the card center (the far one first; clipped by slot_margin); other zones keep the
+  # four corner slots. zone_red (persimmon + bell_pepper, ~75 mm each): 86 mm apart instead
+  # of 11 cm on opposite corners, where they rolled off the card (11/13).
+  pair_offset:
+    zone_red: [0.035, 0.025]
   # Official sizes [length, width] (m, organizers' Q&A): the release planner never uses a
   # smaller footprint than these (curved / round objects are measured short)
   nominal_footprint:

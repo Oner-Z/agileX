@@ -757,6 +757,18 @@ class PlacePlanner:
         self.open_width = self.max_width if ow is None else min(float(ow), self.max_width)
         self.spread = bool(cfg.get('place.spread_releases', True))
         self.slot_margin = _float(cfg, 'place.slot_margin', SLOT_MARGIN)
+        #: zone name -> (toward the base, across) m off the zone center of its two
+        #: zone-mate slots (far first, the near one mirrored); other zones use the 2 x 2
+        #: corner slots of release_slots
+        self.pair_offset: Dict[str, Tuple[float, float]] = {}
+        for zn, po in (cfg.get('place.pair_offset', {}) or {}).items():
+            if po is None:
+                continue
+            vals = [float(v) for v in (po if isinstance(po, (list, tuple)) else [po, 0.0])]
+            if len(vals) != 2 or not all(v >= 0.0 for v in vals):
+                raise ValueError('place.pair_offset.%s must be [radial, across] >= 0 m, got %r'
+                                 % (zn, po))
+            self.pair_offset[str(zn)] = (vals[0], vals[1])
         #: details of the last shaped release (plan with held): xy, axis, margins.
         self.last_info: dict = {}
 
@@ -776,7 +788,7 @@ class PlacePlanner:
         if not self.spread or not _finite(footprint) or float(footprint) <= 0.0:
             return center
         fp = float(footprint)
-        cands = ([center] if center_first else []) + release_slots(zone, fp, self.slot_margin)
+        cands = ([center] if center_first else []) + self._slots(zone, fp)
         occ = [o for o in occupied if len(o) >= 3 and all(_finite(v) for v in o[:3])]
         if not occ:
             return cands[0]
@@ -789,6 +801,29 @@ class PlacePlanner:
             if clear > best_clear:
                 best, best_clear = (x, y), clear
         return best
+
+    def _slots(self, zone: Zone, footprint: float) -> List[Tuple[float, float]]:
+        """
+        Release slots for an object of this footprint (m): with place.pair_offset for
+        this zone (a, b) two mirrored slots a along the zone axis toward the base and b across
+        it off the center (each at most as far as the card allows), the far one
+        first, so zone-mates sit near the middle of the card; else release_slots.
+        """
+        off = self.pair_offset.get(zone.name)
+        if off is None:
+            return release_slots(zone, footprint, self.slot_margin)
+        ax = strip_axis(zone)
+        k = 0 if abs(wrap_pi(2.0 * (ax - float(zone.yaw)))) < 1e-6 else 1
+        lim = [(float(zone.size[i]) - float(footprint)) / 2.0 - self.slot_margin
+               for i in (k, 1 - k)]
+        a, b = [max(0.0, min(o, m)) for o, m in zip(off, lim)]
+        cx, cy = float(zone.center[0]), float(zone.center[1])
+        if math.hypot(a, b) < SLOT_MIN_OFFSET:
+            return [(cx, cy)]
+        ux, uy = math.cos(ax), math.sin(ax)
+        dx, dy = a * ux - b * uy, a * uy + b * ux
+        pts = [(cx + dx, cy + dy), (cx - dx, cy - dy)]
+        return sorted(pts, key=lambda q: -math.hypot(q[0], q[1]))
 
     def _axes(self, zone: Zone, x: float, y: float, length: float, width: float,
               elongated: bool) -> List[Optional[float]]:
@@ -891,7 +926,7 @@ class PlacePlanner:
         side = min(float(zone.size[0]), float(zone.size[1]))
         reserve = [] if L > LONG_ZONE_RATIO * side else self._reserved(zone, pending)
         legacy = (([center] if center_first else [])
-                  + (release_slots(zone, L, self.slot_margin) if self.spread else []))
+                  + (self._slots(zone, L) if self.spread else []))
         if not legacy:
             legacy = [center]
 
