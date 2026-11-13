@@ -292,6 +292,20 @@ runner:
   # captured again before the next pick (the rest were not touched); -1 = every view
   rescan_radius_m: 0.12
   scan_all_first: false        # false: pick right after the first view that shows a target
+  # Watch the pick area with the wrist camera during each pick (real arm, several observe
+  # views; task/live.py). The arm path is unchanged. Frames from the lift on, taken while the
+  # arm hardly moves (near the ends of moves), update a fruit's position when it moved more
+  # than move_m or was not known yet; one seen where it was is picked without going back
+  # to its observe view.
+  live_watch:
+    enabled: false
+    max_motion_m: 0.01         # flange travel allowed around one frame (else the pose is off)
+    max_rot_deg: 2.0
+    latency_s: 0.1             # frame receipt after exposure (s)
+    move_m: 0.03               # a fruit counts as moved beyond this (m)
+    match_m: 0.15              # same label within this = the same fruit (m)
+    held_margin_m: 0.02        # ignored around the held object, plus its half footprint
+    join_s: 3.0
   # An elongated class (place.nominal_footprint) seen shorter than this x its nominal
   # length is cut by the image border or the gripper: not picked from that view
   partial_length_ratio: 0.6

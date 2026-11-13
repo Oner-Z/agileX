@@ -19,6 +19,10 @@ robot:
     max_tilt_free_deg: 180        # 空中姿态（预抓/预放/抬起/撤退）的倾斜上限，规划器读这个值
     max_tilt_from_down_deg: 180   # 取消抓取/放置的倾斜限制（只剩关节限位和桌面高度）
 
+runner:
+  live_watch:
+    enabled: true              # 抓取过程中实时观察剩余水果位置（不改变机械臂路径）
+
 sim:
   mujoco:
     tcp_z: 0.1425                # 仿真 TCP 与 robot.tcp_offset 一致（模型指垫量出来是 0.135）

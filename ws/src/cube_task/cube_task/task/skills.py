@@ -151,6 +151,8 @@ class PickPlaceSkill:
         self.verify = bool(cfg.get('grasp.verify_grasp', True))
         self.hover = float(cfg.get('runner.dry_run_hover', 0.05))
         self.feedback_max_age = float(cfg.get('robot.motion.feedback_max_age_s', 0.5))
+        #: called with the stage name before every move (task.live watcher); None = off.
+        self.on_stage = None
 
     # ------------------------------------------------------------------ public
     def execute(self, grasp: GraspPlan, place: PlacePlan, dry_run: bool = False) -> PickResult:
@@ -220,6 +222,11 @@ class PickPlaceSkill:
 
     def _move(self, r: PickResult, stage: str, T: np.ndarray, linear: bool) -> MotionResult:
         self._check_abort(stage)
+        if self.on_stage is not None:
+            try:
+                self.on_stage(stage)
+            except Exception:  # noqa: B902 - an observer never changes the motion
+                _LOG.exception('on_stage hook failed')
         t = self.clock.now()
         if self.free_tilt is not None and stage in FREE_STAGES:
             m = self.arm.move_tcp(T, linear=linear, max_tilt_deg=self.free_tilt)

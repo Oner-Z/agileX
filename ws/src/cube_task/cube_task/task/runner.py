@@ -40,6 +40,7 @@ from .selfcheck import observe_tcp_pose, self_check
 from .skills import PickPlaceSkill, is_fault_motion_error
 from .views import (drop_near, MERGE_DIST, merge_view_detections, nearest_view, observe_views,
                     tag_view, view_of, views_near)
+from .live import drop_live_seen
 
 _LOG = logging.getLogger('cube_task.task.runner')
 
@@ -244,6 +245,11 @@ class TaskRunner:
         self.rescan_radius = float(cfg.get('runner.rescan_radius_m', 0.12))
         #: false: pick as soon as one view shows a target; true: scan every view first
         self.scan_all_first = bool(cfg.get('runner.scan_all_first', False))
+        from .live import LiveSettings
+        #: runner.live_watch: watch the pick area during each pick (real arm, several views)
+        self.live = LiveSettings(cfg)
+        self._live_dets: List[Detection] = []
+        self._live_mark = 0
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
         tcp = cfg.get('robot.tcp_offset', None)
@@ -911,7 +917,19 @@ class TaskRunner:
                     transit_z=round(float(pp.T_pre[2, 3]), 4), place=place_info,
                     grasp=det.extra.get('grasp', {}) if det.extra else {},
                     remaining=round(self._remaining(), 2))
-        res = self.skill.execute(gp, pp, dry_run=self.dry_run)
+        watcher = self._live_watcher(det)
+        self._live_dets = []
+        self._live_mark += 1                    # confirmations of earlier picks expire
+        if watcher is not None:
+            self.skill.on_stage = watcher.stage
+        try:
+            res = self.skill.execute(gp, pp, dry_run=self.dry_run)
+        finally:
+            if watcher is not None:
+                self.skill.on_stage = None
+                self._live_dets = watcher.finish()
+                self._event('decision', action='live_watch', label=det.label,
+                            n=len(self._live_dets), **watcher.stats)
         self._at_observe = False
         if res.detail.get('fault') or res.detail.get('holding'):
             # A held object that could not be put down is a fault as well.
@@ -1019,6 +1037,17 @@ class TaskRunner:
             return None, 'stopped before moving: %s' % stop
         reason = str(self._tracks[-1].get('reason', '')) if self._tracks else ''
         return None, reason or 'not attempted (measure again)'
+
+    def _live_watcher(self, det: Detection):
+        """Return a task.live.LiveWatcher for this pick, None when live watching is off."""
+        if (not self.live.enabled or self.mode != 'real' or self.dry_run or not self.multi_view
+                or self.camera is None or self.ext is None):
+            return None
+        from .live import LiveWatcher
+        fp = self._footprint(det)
+        held_r = (0.10 if fp is None else 0.5 * float(fp)) + self.live.held_margin
+        return LiveWatcher(self.live, self.arm, self.camera, self.perception, self.ext,
+                           self.T_flange_tcp, self.zones, self.clock, held_r, self.view_merge)
 
     def _floors(self, det: Detection, gp, pp, held: float) -> Dict[str, float]:
         """
@@ -1166,6 +1195,7 @@ class TaskRunner:
         if status != 'ok':
             return status
         scene[view] = tag_view(result.valid_detections(), view)
+        drop_live_seen(scene, len(self.views), view, self.view_merge)
         stale.discard(view)
         seen.add(view)
         self._event('decision', action='view_scanned', view=view, n=len(scene[view]),
@@ -1202,7 +1232,8 @@ class TaskRunner:
             target = None
             if len(seen) == n or (seen and not self.scan_all_first):
                 target = self._select(self._candidates_from(merged), merged)
-            if target is None or view_of(target) in stale:
+            if target is None or (view_of(target) in stale
+                                  and (target.extra or {}).get('live_ok') != self._live_mark):
                 if target is not None:
                     view = view_of(target)
                 elif stale:
@@ -1237,14 +1268,44 @@ class TaskRunner:
                         stale = set(range(n))
                     else:
                         # objects next to the picked one may have been touched
-                        stale |= views_near(scene, xy, self.rescan_radius)
+                        stale |= views_near(scene, xy, self.rescan_radius) - {n}
+                    self._apply_live(scene, xy)
                 else:
                     stale = set(range(n))       # a failed pick may have moved things
+                    scene.pop(n, None)          # live positions may predate a drop
+            elif view_of(target) == n:
+                # a live position that could not be picked: measure it in the views again
+                scene[n] = [d for d in scene.get(n, []) if d is not target]
+                xy = _xy(target)
+                stale |= (views_near(scene, xy, self.rescan_radius) - {n}) if xy else set(range(n))
+                if not (stale & set(range(n))):
+                    stale = set(range(n))
             else:
                 stale.add(view_of(target))      # not picked: measure it again
             if stop is not None:
                 rep.stop_reason = stop
                 return
+
+    def _apply_live(self, scene: Dict[int, List[Detection]], xy) -> None:
+        """
+        Update scene with the detections seen during the last pick (task.live).
+
+        A fruit that moved more than live_watch.move_m, or that was not known,
+        gets the live position; one seen where it was is confirmed and is picked
+        without capturing its view again. Live positions of earlier picks near
+        this one that this pick did not see again are dropped (maybe touched).
+        """
+        if not self._live_dets:
+            return
+        from .live import apply_live, drop_unconfirmed_live
+        n = len(self.views)
+        ch = apply_live(scene, self._live_dets, n, self._live_mark, self.live.move,
+                        self.live.match, self.view_merge)
+        dropped = 0
+        if xy is not None:
+            dropped = drop_unconfirmed_live(scene, n, self._live_mark, xy, self.rescan_radius)
+        self._live_dets = []
+        self._event('decision', action='live_update', dropped=dropped, **ch)
 
     def _report_view_coverage(self) -> None:
         """Log how much of the pick area the observe views cover (eye_in_hand, never refuses)."""
