@@ -262,6 +262,10 @@ class TaskRunner:
         self.min_approach = float(cfg.get(g + 'min_approach_clearance', MIN_APPROACH_CLEARANCE))
         self.transit_clear = float(cfg.get(g + 'transit_object_clearance',
                                            TRANSIT_OBJECT_CLEARANCE))
+        #: label -> m the release goes below place.release_height(_flat) (place.release_lower)
+        self.release_lower = {str(k): float(v) for k, v in
+                              (cfg.get('place.release_lower', {}) or {}).items()
+                              if v is not None and math.isfinite(float(v))}
         self.expected_table_z = expected_table_z(cfg)
         self._tracks: List[Dict[str, Any]] = []
         self._label_failures: Dict[str, int] = {}
@@ -828,6 +832,10 @@ class TaskRunner:
         held = held_offset_of(gp)
         tz = transit_height(self.cfg, list(self.zones.values()), detection_table_z(det), held,
                             max(tops) if tops else None)
+        # Lift straight up to the transit height before moving sideways, so the held
+        # object does not sweep low over the other objects on the way to the zone.
+        gp.T_lift[2, 3] = max(float(gp.T_lift[2, 3]), float(tz))
+        lower = self.release_lower.get(det.label, 0.0)
         zone = self.zones.get(zone_name)
         footprint = self._footprint(det)
         occupied = list(self._placed.get(zone_name, []))
@@ -837,7 +845,7 @@ class TaskRunner:
         pending = [p for p in pending if p is not None]
         pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                               center_first=self._center_first(zone_name), held=shape,
-                              pending=pending)
+                              pending=pending, lower=lower)
         place_info = dict(self.placer.last_info)
         if not pp.feasible:
             self._blacklist(track, 'place infeasible: %s' % pp.reason)
@@ -857,7 +865,7 @@ class TaskRunner:
             avoid.append((float(pp.T_release[0, 3]), float(pp.T_release[1, 3])))
             pc = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                                   center_first=self._center_first(zone_name), held=shape,
-                                  pending=pending, avoid=avoid)
+                                  pending=pending, avoid=avoid, lower=lower)
             if not pc.feasible or any(math.hypot(float(pc.T_release[0, 3]) - a,
                                                  float(pc.T_release[1, 3]) - b) < 1e-6
                                       for a, b in avoid):
@@ -870,7 +878,7 @@ class TaskRunner:
         if not ok and footprint is not None:
             # Last resort: the zone center, on a flat card only when nothing lies there.
             pc = self.placer.plan(zone, held, tz, occupied=occupied, held=shape,
-                                  center_only=True)
+                                  center_only=True, lower=lower)
             fpc = self.placer.last_info.get('footprint_clearance')
             if pc.feasible and (zone.wall_height > 0.0 or fpc is None or fpc >= 0.0):
                 ok_c, why_c, tilts_c = adjust_plan_poses(self.arm, gp, pc,

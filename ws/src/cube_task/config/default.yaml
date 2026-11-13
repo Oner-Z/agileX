@@ -230,6 +230,10 @@ place:
   release_height: 0.06         # object bottom above the zone floor when the gripper opens
   release_height_flat: 0.010   # ... over a flat card: low, so round fruit does not roll off
   retreat_height: 0.10
+  # label -> m the release goes below release_height(_flat); the wall rim / stack rules
+  # still apply. bell_pepper: released a little lower so it does not tip over on the card.
+  release_lower:
+    bell_pepper: 0.005
   open_width: null             # null -> robot.gripper.max_width
   # Spread releases inside a zone: first free slot of a grid from zone.size minus the
   # held object's footprint (zone center first when at most one class_to_zone label maps

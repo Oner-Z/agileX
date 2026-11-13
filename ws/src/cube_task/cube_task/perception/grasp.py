@@ -824,8 +824,8 @@ class PlacePlanner:
 
     def release_pose(self, zone: Zone, held: dict, occupied: Sequence[Sequence[float]] = (),
                      center_first: bool = True, pending: Sequence[Sequence[float]] = (),
-                     center_only: bool = False, avoid: Sequence[Sequence[float]] = ()
-                     ) -> Tuple[float, float, float, dict]:
+                     center_only: bool = False, avoid: Sequence[Sequence[float]] = (),
+                     lower: float = 0.0) -> Tuple[float, float, float, dict]:
         """
         Return (x, y, closing angle, info) of a shaped release (see plan, held).
 
@@ -856,8 +856,8 @@ class PlacePlanner:
         open_w = min(self.open_width, grip + RELEASE_OPEN_EXTRA)
         open_min = min(open_w, grip + RELEASE_OPEN_MIN_EXTRA)
         # Finger bottom above the zone floor at the release (the stack rule is off).
-        finger_floor = (self.release_height_flat + float(held.get('grip_z', 0.0) or 0.0)
-                        - PAD_HALF)
+        finger_floor = (self.release_height_flat - float(lower)
+                        + float(held.get('grip_z', 0.0) or 0.0) - PAD_HALF)
         occ = [o for o in occupied if _occupied_capsule(o) is not None]
         center = (float(zone.center[0]), float(zone.center[1]))
         side = min(float(zone.size[0]), float(zone.size[1]))
@@ -952,7 +952,7 @@ class PlacePlanner:
              footprint: Optional[float] = None, occupied: Sequence[Sequence[float]] = (),
              center_first: bool = True, held: Optional[dict] = None,
              pending: Sequence[Sequence[float]] = (), center_only: bool = False,
-             avoid: Sequence[Sequence[float]] = ()) -> PlacePlan:
+             avoid: Sequence[Sequence[float]] = (), lower: float = 0.0) -> PlacePlan:
         """
         Return a PlacePlan for releasing into zone (poses in the base frame, m).
 
@@ -964,6 +964,8 @@ class PlacePlanner:
         closing axis), grip_width (m), grip_z (grasp TCP above the object
         bottom, m). None = the footprint rule above. pending / center_only: see
         release_pose (center_only also applies without held). avoid: see release_pose.
+        lower: m the release goes below the release height (place.release_lower
+        per label); the wall rim and stack clearances still apply.
         """
         eye = np.eye(4)
         self.last_info = {}
@@ -982,7 +984,8 @@ class PlacePlanner:
             rh = self.release_height
         else:
             rh = self.release_height_flat
-        z_rel = floor + rh + held_offset
+        lower = float(lower) if _finite(lower) else 0.0
+        z_rel = floor + rh - lower + held_offset
         if zone.wall_height > 0.0:
             z_rel = max(z_rel, floor + zone.wall_height + WALL_RELEASE_CLEARANCE + held_offset)
         open_w = self.open_width
@@ -993,7 +996,7 @@ class PlacePlanner:
             W = float(held.get('width', 0.0) or 0.0)
         if held is not None and _finite(L) and _finite(W) and max(L, W) > 0.0:
             x, y, ang, info = self.release_pose(zone, held, occupied, center_first, pending,
-                                                center_only, avoid)
+                                                center_only, avoid, lower)
             open_w = info['open_width']
             self.last_info = info
             # On a flat card a footprint clear of the objects already there drops from the
