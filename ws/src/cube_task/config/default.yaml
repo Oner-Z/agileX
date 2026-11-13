@@ -123,6 +123,13 @@ camera:
     repeat: 1                  # serve each recorded frame N times (set to frames_to_average)
 
 perception:
+  # Stem of a fruit found in the color image (inside the instance mask, grown 3 px); its
+  # base xy (median of the depth points of the largest stem-colored blob) is the grasp
+  # center of grasp.stem_labels. HSV (OpenCV: H 0-180) ranges per label.
+  stem:
+    min_pixels: 300            # 11-12 data: a visible calyx is 500-3600 px; 67-166 px blobs were noise
+    labels:
+      bell_pepper: [[[35, 60, 30], [95, 255, 255]]]   # green calyx on a red / yellow pepper
   debug_image: true
   l1_block_size: 0.05          # edge length of the L1 cubes (used to cut merged blocks)
   depth:
@@ -231,6 +238,10 @@ grasp:
   verify_grasp: true
   open_full_tasks: [L1]         # open to robot.gripper.max_width before these tasks' grasps
   open_full_labels: [bell_pepper]   # ... and before these labels' grasps (11/13: bumpy, misses)
+  # grasp these labels centered on their stem (perception.stem) when it lies within
+  # stem_max_offset_ratio x width of the footprint center; else the cap center as before
+  stem_labels: [bell_pepper]
+  stem_max_offset_ratio: 0.5
 
 place:
   release_height: 0.06         # object bottom above the zone floor when the gripper opens
@@ -241,9 +252,11 @@ place:
   release_lower:
     bell_pepper: 0.005
     pear: 0.005                # 11/13: pear rolled; released as low as the bell pepper
-  # labels released as near the card center as the objects already there allow (8 mm gap)
-  # instead of a corner slot: the pear rolled off from its corner of zone_green (11/13)
-  center_labels: [pear]
+  # label -> m toward the robot (base -x): released as near as the objects already there
+  # allow (8 mm gap) to the card center moved this far, instead of a corner slot (11/13: the
+  # pear rolled off from its corner of zone_green). A list = 0 m for each.
+  center_labels:
+    pear: 0.03
   open_width: null             # null -> robot.gripper.max_width
   # Spread releases inside a zone: first free slot of a grid from zone.size minus the
   # held object's footprint (zone center first when at most one class_to_zone label maps
@@ -326,6 +339,10 @@ runner:
   # length is cut by the image border or the gripper: not picked from that view
   partial_length_ratio: 0.6
   start_on_enter: true         # wait for Enter before the timed run starts
+  # zone -> labels in the order they are released there: a later label waits while an
+  # earlier one is not placed and still pickable in view or an observe view is unscanned
+  zone_order:
+    zone_green: [cucumber, pear]
   return_home_at_end: home     # after the round: home (robot.poses.home_joints) | observe | false
   view_merge_dist_m: 0.04      # several observe views: one object if the centers are closer
   dry_run_hover: 0.05          # --dry-run: stay this high above grasp / release poses

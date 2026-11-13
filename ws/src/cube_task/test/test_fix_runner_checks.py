@@ -319,3 +319,31 @@ def test_near_center_release_goes_as_close_to_the_center_as_the_zone_mates_allow
     assert info['edge_margin'] >= pp.slot_margin - 1e-9 and info['clearance'] >= 0.0
     d = [np.hypot(p.T_release[0, 3] - 0.60, p.T_release[1, 3] + 0.30) for p in (slot, near)]
     assert d[1] < d[0]
+
+
+def test_near_center_shift_moves_the_release_toward_the_robot():
+    cfg = make_cfg('L2')
+    cfg.set('robot.gripper.max_width', 0.100)
+    z = parse_zone('zone_green', {'center': [0.60, -0.30, 0.0], 'size': [0.20, 0.20]})
+    pp = PlacePlanner(cfg)
+    h = {'length': 0.085, 'width': 0.085, 'grip_width': 0.08, 'grip_z': 0.03}
+    p = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False, near_center=0.03)
+    assert pp.last_info['tier'] == 'near_center'
+    assert np.allclose(p.T_release[:2, 3], [0.57, -0.30], atol=1e-6)
+
+
+def test_flat_release_rises_only_when_the_fingers_would_hit():
+    cfg = make_cfg('L2')
+    cfg.set('robot.gripper.max_width', 0.100)
+    z = parse_zone('zone_green', {'center': [0.60, -0.30, 0.0], 'size': [0.20, 0.20]})
+    pp = PlacePlanner(cfg)
+    h = {'length': 0.085, 'width': 0.085, 'grip_width': 0.08, 'grip_z': 0.03}
+    low = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False)
+    occ = [(0.60, -0.245, 0.26, 0.10, 0.26, 0.04, 0.0)]                # tall cucumber
+    p = pp.plan(z, 0.03, 0.2, footprint=0.085, held=h, center_first=False, occupied=occ,
+                near_center=0.0)
+    info = pp.last_info
+    if info['finger_clearance'] is None or info['finger_clearance'] >= 0.0:
+        assert p.T_release[2, 3] == pytest.approx(low.T_release[2, 3])
+    else:
+        assert p.T_release[2, 3] > low.T_release[2, 3]

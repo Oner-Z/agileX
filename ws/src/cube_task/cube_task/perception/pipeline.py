@@ -212,6 +212,14 @@ class Perception:
         self.seg_params = SegmentParams.from_cfg(cfg)
         self.pick_polygon = parse_polygon(cfg.get('perception.roi.pick_polygon', None))
         self.zmin = float(cfg.get('perception.depth.min_z', 0.15))
+        #: label -> HSV ranges of its stem (perception.stem): the stem center is found in the
+        #: color image inside the instance mask and stored as extra['stem_xy'] (base m)
+        self.stems: Dict[str, List[Any]] = {}
+        for lbl, rngs in (cfg.get('perception.stem.labels', {}) or {}).items():
+            if rngs:
+                self.stems[str(lbl)] = [(np.array(lo, np.uint8), np.array(hi, np.uint8))
+                                        for lo, hi in rngs]
+        self.stem_min_px = int(cfg.get('perception.stem.min_pixels', 30))
         self.zmax = float(cfg.get('perception.depth.max_z', 3.0))
         if not (0.0 < self.zmin < self.zmax):
             raise ValueError('perception.depth: need 0 < min_z < max_z')
@@ -338,6 +346,8 @@ class Perception:
             dets = self._color_split(frame, seg, dets, blocks, res)
             res.timings['color_split'] = _ms(t)
         self._label(frame, dets, res, color_ok)
+        if self.stems and color_ok:
+            self._find_stems(frame, dets, pts)
         if blocks is not None and self.seg_params.merged_blocks != 'off':
             t = time.perf_counter()
             dets = self._merged_blocks(frame, seg, dets, blocks, res)
@@ -401,6 +411,43 @@ class Perception:
             self._classify(frame, rest, res)
             res.timings['classify'] = _ms(t)
         self._apply_min_score(dets)
+
+    def _find_stems(self, frame: Frame, dets: List[Detection], pts: np.ndarray) -> None:
+        """
+        Set extra['stem_xy'] / ['stem_px'] / ['stem_pixels'] of the perception.stem labels.
+
+        The stem is the largest blob of stem-colored (HSV) pixels inside the instance
+        mask, grown by a few pixels (a stem on the rim sits on the mask border); its
+        base-frame xy is the median of the valid 3D points of the blob.
+        """
+        hsv = None
+        for d in dets:
+            rngs = self.stems.get(d.label)
+            if not rngs or d.mask is None or d.mask.shape[:2] != frame.color.shape[:2]:
+                continue
+            if hsv is None:
+                hsv = cv2.cvtColor(frame.color, cv2.COLOR_BGR2HSV)
+            m = d.mask.astype(np.uint8)
+            m = cv2.dilate(m, np.ones((7, 7), np.uint8)) > 0
+            col = np.zeros(m.shape, bool)
+            for lo, hi in rngs:
+                col |= cv2.inRange(hsv, lo, hi) > 0
+            col &= m
+            n, lab, stats, cent = cv2.connectedComponentsWithStats(col.astype(np.uint8), 8)
+            if n <= 1:
+                continue
+            k = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            area = int(stats[k, cv2.CC_STAT_AREA])
+            d.extra['stem_pixels'] = area
+            if area < self.stem_min_px:
+                continue
+            p3 = pts[lab == k]
+            p3 = p3[np.all(np.isfinite(p3), axis=1)]
+            if p3.shape[0] < max(5, area // 10):
+                continue
+            xy = np.median(p3[:, :2], axis=0)
+            d.extra['stem_xy'] = [float(xy[0]), float(xy[1])]
+            d.extra['stem_px'] = [float(cent[k][0]), float(cent[k][1])]
 
     def _classify(self, frame: Frame, dets: List[Detection], res: PerceptionResult) -> None:
         try:

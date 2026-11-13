@@ -274,3 +274,20 @@ def test_held_object_without_fault_flag_still_stops(monkeypatch):
         detail={'fault': False, 'holding': True}))
     rep = rig.runner().run()
     assert rep.stop_reason == 'fault' and rep.attempts == 1
+
+
+def test_zone_order_places_the_earlier_label_first_and_falls_back_when_it_is_gone():
+    rig = Rig('L2')
+    rig.cfg.set('runner.zone_order', {'zone_red': ['orange', 'apple']})
+    # apple is nearer the base, so without zone_order it would be picked first
+    rig.world.add(make_det('apple', 0.22, -0.15, size=0.06, length=0.065, height=0.05))
+    rig.world.add(make_det('orange', 0.35, 0.15, size=0.055, length=0.058, height=0.05))
+    rep = rig.runner().run()
+    assert rep.placed == 2, (rep.stop_reason, [p.error for p in rep.picks])
+    assert rig.world.placed['zone_red'] == ['orange', 'apple']
+    rig2 = Rig('L2')
+    rig2.cfg.set('runner.zone_order', {'zone_red': ['orange', 'apple']})
+    rig2.cfg.set('tasks.L2.required', 1)
+    rig2.world.add(make_det('apple', 0.22, -0.15, size=0.06, length=0.065, height=0.05))
+    rep2 = rig2.runner().run()                                         # no orange in view
+    assert rig2.world.placed.get('zone_red') == ['apple'], rep2.stop_reason

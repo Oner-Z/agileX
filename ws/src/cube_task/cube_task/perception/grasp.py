@@ -354,6 +354,10 @@ class GraspPlanner:
             raise ValueError('grasp.min_grasp_depth > grasp.max_grasp_depth')
         self.square_blocks = bool(cfg.get('grasp.block_labels_square', True))
         self.use_cap_center = bool(cfg.get('grasp.use_cap_center', True))
+        #: grasp these labels at their stem (perception.stem, det.extra['stem_xy']) when it
+        #: lies within grasp.stem_max_offset_ratio x width of the footprint center
+        self.stem_labels = set(str(x) for x in (cfg.get('grasp.stem_labels', []) or []))
+        self.stem_max_ratio = float(cfg.get('grasp.stem_max_offset_ratio', 0.5))
         self.block_labels = set(str(x) for x in (cfg.get('tasks.L1.labels', []) or []))
         self.use_profile = bool(cfg.get('grasp.section_profile', True))
         self.finger_clearance = _float(cfg, 'grasp.finger_clearance', FINGER_CLEARANCE)
@@ -421,6 +425,15 @@ class GraspPlanner:
                 and _finite(cap[0]) and _finite(cap[1])
                 and math.hypot(float(cap[0]) - x, float(cap[1]) - y) <= 0.5 * width):
             x, y = float(cap[0]), float(cap[1])
+        stem = det.extra.get('stem_xy') if det.extra else None
+        at_stem = False
+        if (det.label in self.stem_labels and stem is not None and len(stem) >= 2
+                and _finite(stem[0]) and _finite(stem[1])):
+            cx0, cy0 = float(c[0]), float(c[1])
+            if math.hypot(float(stem[0]) - cx0, float(stem[1]) - cy0) <= (
+                    self.stem_max_ratio * width):
+                x, y = float(stem[0]), float(stem[1])
+                at_stem = True
         ratio = length / width
         neutral = neutral_closing_angle(x, y)
         is_block = self.task == 'L1' or det.label in self.block_labels
@@ -460,6 +473,8 @@ class GraspPlanner:
                     y += shift * math.sin(closing)
             prof = section_profile(pts, (x, y), closing, table_z)
         info = {'kind': kind, 'mode': 'footprint' if prof is None else 'profile'}
+        if det.label in self.stem_labels:
+            info['stem'] = at_stem
         reason = ''
         if prof is None:
             depth = min(max(self.depth_ratio * height, self.min_depth), self.max_depth)
@@ -814,17 +829,24 @@ class PlacePlanner:
         return best
 
     def _near_center(self, zone: Zone, center: Tuple[float, float], evaluate, skip,
-                     reserve_ok=lambda x, y, ax: True):
-        """Grid release nearest the zone center with the edge margin and NEAR_CENTER_GAP."""
+                     reserve_ok=lambda x, y, ax: True, shift: float = 0.0):
+        """
+        Grid release nearest the zone center moved shift m toward the robot (base -x),
+        with the edge margin and NEAR_CENTER_GAP.
+        """
         ca, sa = math.cos(zone.yaw), math.sin(zone.yaw)
         nx = int(math.floor(float(zone.size[0]) / 2.0 / NEAR_CENTER_STEP))
         ny = int(math.floor(float(zone.size[1]) / 2.0 / NEAR_CENTER_STEP))
-        cells = sorted(((i * NEAR_CENTER_STEP, j * NEAR_CENTER_STEP)
-                        for i in range(-nx, nx + 1) for j in range(-ny, ny + 1)),
-                       key=lambda q: (math.hypot(q[0], q[1]), -q[0], -q[1]))
+        tx, ty = center[0] - float(shift), center[1]
+        cells = []
+        for i in range(-nx, nx + 1):
+            for j in range(-ny, ny + 1):
+                a, b = i * NEAR_CENTER_STEP, j * NEAR_CENTER_STEP
+                x, y = center[0] + ca * a - sa * b, center[1] + sa * a + ca * b
+                cells.append((math.hypot(x - tx, y - ty), x, y))
+        cells.sort()
         rows = []
-        for a, b in cells:
-            x, y = center[0] + ca * a - sa * b, center[1] + sa * a + ca * b
+        for _dist, x, y in cells:
             if not skip(x, y):
                 rows.extend((x, y) + r[1:] for r in evaluate(x, y))
         for gap in (NEAR_CENTER_GAP, 0.0):     # a clear gap first, else just not touching
@@ -919,7 +941,7 @@ class PlacePlanner:
     def release_pose(self, zone: Zone, held: dict, occupied: Sequence[Sequence[float]] = (),
                      center_first: bool = True, pending: Sequence[Sequence[float]] = (),
                      center_only: bool = False, avoid: Sequence[Sequence[float]] = (),
-                     lower: float = 0.0, near_center: bool = False
+                     lower: float = 0.0, near_center: Optional[float] = None
                      ) -> Tuple[float, float, float, dict]:
         """
         Return (x, y, closing angle, info) of a shaped release (see plan, held).
@@ -937,10 +959,11 @@ class PlacePlanner:
         (RESERVE_CLEARANCE). center_only: the zone center (best axis there).
         avoid: release xy already found unreachable; positions within
         AVOID_RADIUS of them are skipped (the center too, unless center_only).
-        near_center: instead of the slots, the grid position nearest the zone center
-        that keeps place.slot_margin to the edge, NEAR_CENTER_GAP (else 0) to the
-        objects and finger band, and room for the fingers of a pending long object on
-        its strip (tier near_center); the usual tiers when none does.
+        near_center: m toward the robot (base -x) from the zone center of a target
+        point (None = off); instead of the slots, the grid position nearest it that
+        keeps place.slot_margin to the edge, NEAR_CENTER_GAP (else 0) to the objects
+        and finger band, and room for the fingers of a pending long object on its
+        strip (tier near_center); the usual tiers when none does.
         """
         banned = [(float(a[0]), float(a[1])) for a in avoid]
 
@@ -1009,14 +1032,15 @@ class PlacePlanner:
                                      finger_floor, occ)
             return done(x, y, ax, closing, capsule_edge_margin(zone, cap), min(fp, fg),
                         (fp, fg, open_w), 'long_strip')
-        if near_center and not center_only:
+        if near_center is not None and near_center is not False and not center_only:
             def reserve_ok(x, y, ax):
                 # a long object still to come is released on its strip with the fingers
                 # open across it: keep them clear of this one too
                 cap = footprint_capsule(x, y, L, W, ax)
                 return all(_seg_dist(cap[0], cap[1], r[0], r[1]) - cap[2] - r[2]
                            >= RELEASE_OPEN_EXTRA / 2.0 + FINGER_OUTER for r in reserve)
-            hit = self._near_center(zone, center, evaluate, skip, reserve_ok)
+            shift = 0.0 if near_center is True else float(near_center)
+            hit = self._near_center(zone, center, evaluate, skip, reserve_ok, shift)
             if hit is not None:
                 return done(*hit, tier='near_center')
         for x, y in ([] if center_only else legacy):
@@ -1062,7 +1086,7 @@ class PlacePlanner:
              center_first: bool = True, held: Optional[dict] = None,
              pending: Sequence[Sequence[float]] = (), center_only: bool = False,
              avoid: Sequence[Sequence[float]] = (), lower: float = 0.0,
-             near_center: bool = False) -> PlacePlan:
+             near_center: Optional[float] = None) -> PlacePlan:
         """
         Return a PlacePlan for releasing into zone (poses in the base frame, m).
 
@@ -1112,8 +1136,11 @@ class PlacePlanner:
             self.last_info = info
             # On a flat card a footprint clear of the objects already there drops from the
             # empty-zone height; in a walled bin they may have rolled anywhere.
-            fpc = info['footprint_clearance']
-            stack = zone.wall_height > 0.0 or (fpc is not None and fpc < 0.0)
+            # Footprints that only touch push the object aside a little; rising over the
+            # tallest object drops it from ~10 cm (11/13: the pear bounced off the card).
+            # Rise only when the fingers themselves would hit an object there.
+            fgc = info['finger_clearance']
+            stack = zone.wall_height > 0.0 or (fgc is not None and fgc < 0.0)
         else:
             x, y = self.release_xy(zone, None if center_only else footprint, occupied,
                                    center_first)

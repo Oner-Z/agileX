@@ -269,8 +269,17 @@ class TaskRunner:
         self.transit_clear = float(cfg.get(g + 'transit_object_clearance',
                                            TRANSIT_OBJECT_CLEARANCE))
         #: label -> m the release goes below place.release_height(_flat) (place.release_lower)
-        #: labels released as near the zone center as the objects there allow
-        self.center_labels = set(str(x) for x in (cfg.get('place.center_labels', []) or []))
+        #: label -> m toward the robot of the point it is released as near to as the
+        #: objects there allow (place.center_labels; a list = 0 for each)
+        cl = cfg.get('place.center_labels', {}) or {}
+        if isinstance(cl, dict):
+            self.center_labels = {str(k): float(v or 0.0) for k, v in cl.items()}
+        else:
+            self.center_labels = {str(k): 0.0 for k in cl}
+        #: zone -> labels in the order they must be placed (runner.zone_order); a later
+        #: label waits while an earlier one may still come (_zone_order_wait)
+        self.zone_order = {str(z): [str(x) for x in (v or [])]
+                           for z, v in (cfg.get('runner.zone_order', {}) or {}).items()}
         self.release_lower = {str(k): float(v) for k, v in
                               (cfg.get('place.release_lower', {}) or {}).items()
                               if v is not None and math.isfinite(float(v))}
@@ -280,6 +289,10 @@ class TaskRunner:
         #: zone name -> (x, y, footprint, height, length, width, long-axis angle or None) of
         #: the objects released into it
         self._placed: Dict[str, List[Tuple[Any, ...]]] = {}
+        #: zone -> labels released there (runner.zone_order)
+        self._placed_labels: Dict[str, List[str]] = {}
+        #: every observe view scanned at least once (multi-view loop; True with one view)
+        self._all_views_seen = True
         self._fail_streak = 0
         self._last_obs_failure = ''
         self._table_warned = False
@@ -854,7 +867,7 @@ class TaskRunner:
         pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                               center_first=self._center_first(zone_name), held=shape,
                               pending=pending, lower=lower,
-                              near_center=det.label in self.center_labels)
+                              near_center=self.center_labels.get(det.label))
         place_info = dict(self.placer.last_info)
         if not pp.feasible:
             self._blacklist(track, 'place infeasible: %s' % pp.reason)
@@ -875,7 +888,7 @@ class TaskRunner:
             pc = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                                   center_first=self._center_first(zone_name), held=shape,
                                   pending=pending, avoid=avoid, lower=lower,
-                                  near_center=det.label in self.center_labels)
+                                  near_center=self.center_labels.get(det.label))
             if not pc.feasible or any(math.hypot(float(pc.T_release[0, 3]) - a,
                                                  float(pc.T_release[1, 3]) - b) < 1e-6
                                       for a, b in avoid):
@@ -945,6 +958,7 @@ class TaskRunner:
             h = float(det.height) if det.height is not None and math.isfinite(
                 float(det.height)) else 0.0
             axis = place_info.get('axis') if shape is not None else None
+            self._placed_labels.setdefault(zone_name, []).append(det.label)
             self._placed.setdefault(zone_name, []).append(
                 (x_rel, y_rel, 0.0 if footprint is None else footprint, h,
                  shape['length'] if shape else None, shape['width'] if shape else None, axis))
@@ -1117,6 +1131,33 @@ class TaskRunner:
         return [d for d in candidates if self.class_to_zone.get(d.label) not in wait
                 or self._long_in(d, self.class_to_zone.get(d.label))]
 
+    def _zone_order_ok(self, candidates: List[Detection], capped: Set[str]) -> List[Detection]:
+        """
+        Drop the candidates whose zone (runner.zone_order) still waits for an earlier label.
+
+        An earlier label waits only while it is not placed there yet and may still come:
+        a pickable candidate of it (not blacklisted, label not at max failures) is in
+        view, or an observe view has not been scanned yet.
+        """
+        black = self._blacklisted_xy()
+        live = {d.label for d in candidates
+                if d.label not in capped and not is_blacklisted(d, black, self.match_dist)}
+        out = []
+        for d in candidates:
+            zn = self.class_to_zone.get(d.label)
+            order = self.zone_order.get(zn or '', [])
+            if d.label in order:
+                done = self._placed_labels.get(zn, [])
+                before = order[:order.index(d.label)]
+                if any(e not in done and e not in capped
+                       and (e in live or not self._all_views_seen) for e in before):
+                    continue
+            out.append(d)
+        if len(out) < len(candidates):
+            self._event('decision', action='zone_order_wait',
+                        waiting=sorted({d.label for d in candidates} - {d.label for d in out}))
+        return out
+
     def _select(self, candidates: List[Detection], valid: List[Detection]
                 ) -> Optional[Detection]:
         """
@@ -1127,6 +1168,10 @@ class TaskRunner:
         (_long_first).
         """
         capped = {lbl for lbl, n in self._label_failures.items() if n >= self.max_label_failures}
+        if self.zone_order and not self.order:     # a referee order (targets) wins
+            candidates = self._zone_order_ok(candidates, capped)
+            if not candidates:
+                return None
         rest = [d for d in candidates if d.label not in capped] if capped else candidates
         pools = []
         if not self.order and rest:
@@ -1232,6 +1277,7 @@ class TaskRunner:
             if stop is not None:
                 rep.stop_reason = stop
                 return
+            self._all_views_seen = len(seen) >= n
             merged = merge_view_detections(scene, stale, self.view_merge, partial=self._partial)
             target = None
             if len(seen) == n or (seen and not self.scan_all_first):

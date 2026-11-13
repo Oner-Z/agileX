@@ -197,3 +197,20 @@ def test_open_full_labels_open_the_gripper_fully_for_those_labels_only():
     assert plan.open_width == pytest.approx(gp.max_width)
     det2 = make_det('persimmon', 0.30, 0.0, size=0.05)
     assert gp.plan(det2).open_width < gp.max_width
+
+
+def test_stem_labels_grasp_at_the_stem_near_the_center_only():
+    cfg = make_cfg('L2')
+    cfg.set('robot.gripper.max_width', 0.100)
+    cfg.set('grasp.stem_labels', ['bell_pepper'])
+    cfg.set('grasp.section_profile', False)
+    gp = GraspPlanner(cfg, 'L2')
+    det = make_det('bell_pepper', 0.30, 0.0, size=0.06, height=0.06)
+    det.extra['stem_xy'] = [0.31, 0.01]
+    plan = gp.plan(det)
+    assert np.allclose(plan.T_grasp[:2, 3], [0.31, 0.01])
+    assert det.extra['grasp']['stem'] is True
+    far = make_det('bell_pepper', 0.30, 0.0, size=0.06, height=0.06)
+    far.extra['stem_xy'] = [0.36, 0.0]                                 # 60 mm > 0.5 x width
+    assert gp.plan(far).T_grasp[0, 3] == pytest.approx(0.30, abs=0.01)
+    assert far.extra['grasp']['stem'] is False
