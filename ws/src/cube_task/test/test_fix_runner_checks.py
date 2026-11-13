@@ -193,8 +193,11 @@ def test_release_slots_fit_the_footprint_inside_the_zone():
     slots = release_slots(z, 0.065)
     assert len(slots) == 4
     h = (0.14 - 0.065) / 2.0 - SLOT_MARGIN
-    assert np.allclose(slots[0], [0.25 - h, 0.30 - h])
-    assert np.allclose(slots[1], [0.25 + h, 0.30 + h])
+    # diagonal pair first, the slot farther from the base first (the next release is nearer)
+    assert np.allclose(slots[0], [0.25 + h, 0.30 + h])
+    assert np.allclose(slots[1], [0.25 - h, 0.30 - h])
+    for a, b in (slots[0:2], slots[2:4]):
+        assert np.hypot(*a) >= np.hypot(*b)
     assert release_slots(z, 0.13) == [(0.25, 0.30)]                    # too big: center only
     zr = _bin(yaw=np.pi / 2)
     for x, y in release_slots(zr, 0.065):

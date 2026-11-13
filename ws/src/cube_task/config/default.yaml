@@ -223,6 +223,11 @@ grasp:
   block_labels_square: true    # treat L1 blocks as 90-degree symmetric
   use_cap_center: true         # aim at the center of the topmost points (round objects)
   max_object_width: null       # null -> robot.gripper.max_width - 0.005
+  # label -> widest measured section (m) still grasped; others use max_width - 2 x
+  # finger_clearance. pear: its depth points bulge to 0.091-0.094 m (real ~0.085 m), so it
+  # was skipped as too_wide and never reached zone_green (11/13 real runs).
+  fit_width:
+    pear: 0.098
   verify_grasp: true
   open_full_tasks: [L1]         # open to robot.gripper.max_width before these tasks' grasps
 

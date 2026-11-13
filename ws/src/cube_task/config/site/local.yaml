@@ -20,6 +20,8 @@ robot:
     max_tilt_from_down_deg: 180   # 取消抓取/放置的倾斜限制（只剩关节限位和桌面高度）
 
 runner:
+  # 11/13: 放完一个直接去抓下一个，不再先回观察位重拍（被碰动的水果抓空后会全部重拍）
+  rescan_radius_m: 0.0
   live_watch:
     enabled: true              # 抓取过程中实时观察剩余水果位置（不改变机械臂路径）
 

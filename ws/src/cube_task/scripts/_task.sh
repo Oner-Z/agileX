@@ -46,4 +46,9 @@ if ! bash "$PKG/scripts/can_up.sh" "$CHANNEL" 1000000; then
 fi
 
 say "任务 $TASK"
-exec bash "$PKG/scripts/start.sh" "$TASK" "$@"
+# 默认不再确认: 自检通过后直接到观察位开始计时抓取 (-y --no-wait)。
+# 要回到"先问 y、到观察位后等回车": ASK=1 bash scripts/run_L2.sh
+if [ "${ASK:-0}" = "1" ]; then
+    exec bash "$PKG/scripts/start.sh" "$TASK" "$@"
+fi
+exec bash "$PKG/scripts/start.sh" "$TASK" -y --no-wait "$@"

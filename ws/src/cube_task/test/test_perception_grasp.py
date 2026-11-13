@@ -168,3 +168,18 @@ def test_round_fruit_turns_the_fingers_away_from_a_touching_neighbor():
     assert p.feasible
     assert gp.finger_hits(d, free.closing_angle, x, y, free.expected_width) > 0
     assert gp.finger_hits(d, p.closing_angle, x, y, p.expected_width) == 0
+
+
+def test_fit_width_per_label_lets_a_wide_pear_be_grasped():
+    cfg = make_cfg('L2')
+    cfg.set('robot.gripper.max_width', 0.100)
+    cfg.set('grasp.fit_width', {'pear': 0.098})
+    gp = GraspPlanner(cfg, 'L2')
+    assert gp._fit('pear') == pytest.approx(0.098)
+    assert gp._max_object('pear') == pytest.approx(0.098)
+    assert gp._fit('potato') == pytest.approx(0.100 - 2.0 * gp.finger_clearance)
+    cfg.set('grasp.fit_width', {'pear': 0.2})               # wider than the gripper: ignored
+    assert GraspPlanner(cfg, 'L2')._fit('pear') == pytest.approx(gp._fit('potato'))
+    cfg.set('grasp.fit_width', {'pear': 0.0})
+    with pytest.raises(ValueError):
+        GraspPlanner(cfg, 'L2')

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -354,6 +354,28 @@ class GraspPlanner:
         self.min_grasp_height = _float(cfg, 'grasp.min_grasp_height', MIN_GRASP_HEIGHT)
         if self.finger_clearance < 0.0 or self.pad_half < 0.0:
             raise ValueError('grasp.finger_clearance and grasp.pad_half must be >= 0')
+        #: label -> widest measured section (m) still grasped (grasp.fit_width): the depth
+        #: points of a round fruit bulge a few mm past its real outline.
+        self.fit_width: Dict[str, float] = {}
+        for k, v in (cfg.get('grasp.fit_width', {}) or {}).items():
+            if v is None:
+                continue
+            if not float(v) > 0.0:
+                raise ValueError('grasp.fit_width.%s must be > 0, got %r' % (k, v))
+            if float(v) > self.max_width:
+                # set for the 100 mm gripper; a narrower one keeps its default rule
+                _LOG.debug('grasp.fit_width.%s %.3f m > max_width %.3f m: ignored',
+                           k, float(v), self.max_width)
+                continue
+            self.fit_width[str(k)] = float(v)
+
+    def _fit(self, label: Optional[str]) -> float:
+        """Widest section (m) grasped for label: grasp.fit_width or max_width - 2 x clearance."""
+        return self.fit_width.get(str(label), self.max_width - 2.0 * self.finger_clearance)
+
+    def _max_object(self, label: Optional[str]) -> float:
+        """Widest footprint (m) grasped for label: grasp.fit_width or max_object_width."""
+        return self.fit_width.get(str(label), self.max_object_width)
 
     def plan(self, det: Detection) -> GraspPlan:
         """Return a GraspPlan; feasible=False with a reason when it cannot be done."""
@@ -432,8 +454,8 @@ class GraspPlanner:
             depth = min(max(self.depth_ratio * height, self.min_depth), self.max_depth)
             z_grasp = max(top - depth, z_floor)
             open_w = min(self.max_width, expected + self.open_margin)
-            if expected > self.max_object_width:
-                reason = 'too_wide: %.4f m > %.4f m' % (expected, self.max_object_width)
+            if expected > self._max_object(det.label):
+                reason = 'too_wide: %.4f m > %.4f m' % (expected, self._max_object(det.label))
         else:
             z_grasp, expected, open_w, reason, more = self._profile_grasp(
                 det, prof, top, z_floor)
@@ -476,7 +498,7 @@ class GraspPlanner:
         """
         edges, widths = prof
         top_pts = float(edges[-1])
-        fit = self.max_width - 2.0 * self.finger_clearance
+        fit = self._fit(det.label)
         lo = max(z_floor, float(edges[0]) + self.min_grasp_height, top - self.max_depth)
         hi = top - self.min_depth
         n = int(math.floor((hi - lo) / GRASP_Z_STEP + 1e-9)) + 1 if hi >= lo else 1
@@ -589,7 +611,7 @@ class GraspPlanner:
         else the inputs unchanged.
         """
         hits = self.finger_hits(det, closing, x, y, expected)
-        if hits == 0 or alt_expected > self.max_object_width:
+        if hits == 0 or alt_expected > self._max_object(det.label):
             return closing, expected
         alt = choose_closing_angle(closing + math.pi / 2.0, x, y, math.pi)
         alt_hits = self.finger_hits(det, alt, x, y, alt_expected)
@@ -615,9 +637,11 @@ def release_slots(zone: Zone, footprint: float, margin: float = SLOT_MARGIN
 
     footprint: the object's largest horizontal extent (m). Up to 2 x 2
     positions along the zone axes, as far apart as the zone allows while the
-    footprint stays margin inside the zone edge; diagonal pairs first. An
-    axis too short for two positions SLOT_MIN_OFFSET or more off center keeps
-    the zone center on that axis.
+    footprint stays margin inside the zone edge; diagonal pairs first, and in
+    each pair the position farther from the base first: the next release then
+    comes down on the near side and the gripper never passes over the object
+    already there. An axis too short for two positions SLOT_MIN_OFFSET or more
+    off center keeps the zone center on that axis.
     """
     offs = []
     for size in zone.size[:2]:
@@ -634,7 +658,11 @@ def release_slots(zone: Zone, footprint: float, margin: float = SLOT_MARGIN
         loc = [(0.0, 0.0)]
     c, s = math.cos(zone.yaw), math.sin(zone.yaw)
     cx, cy = float(zone.center[0]), float(zone.center[1])
-    return [(cx + c * a - s * b, cy + s * a + c * b) for a, b in loc]
+    pts = [(cx + c * a - s * b, cy + s * a + c * b) for a, b in loc]
+    out: List[Tuple[float, float]] = []
+    for pair in (pts[k:k + 2] for k in range(0, len(pts), 2)):
+        out.extend(sorted(pair, key=lambda q: -math.hypot(q[0], q[1])))
+    return out
 
 
 def _seg_dist(p1: np.ndarray, q1: np.ndarray, p2: np.ndarray, q2: np.ndarray) -> float:
